@@ -55,6 +55,7 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
     implementation("androidx.concurrent:concurrent-futures-ktx:1.2.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("com.google.mlkit:face-detection:16.1.7")
 
     testImplementation("junit:junit:4.13.2")
 }

@@ -74,6 +74,21 @@ class GeometryTest {
     }
 
     @Test
+    fun subjectRulesPenalizeCutsAndDropsAndRewardThirds() {
+        val view = Box(0.5f, 0.5f, 0.6f, 0.6f)
+        val head = Box(0.5f, 0.41f, 0.1f, 0.12f)
+        // Eyes at the upper third of the view: no penalty.
+        assertEquals(0f, SubjectRules.penalty(view, listOf(head), view), 1e-6f)
+        // A framing whose edge runs through the head.
+        assertTrue(SubjectRules.penalty(Box(0.5f, 0.66f, 0.6f, 0.6f), listOf(head), view) >= 1.5f)
+        // A framing that leaves the person out entirely.
+        assertTrue(SubjectRules.penalty(Box(0.25f, 0.8f, 0.3f, 0.3f), listOf(head), view) >= 1f)
+        // Head low in the frame costs more than head near the third.
+        val low = Box(0.5f, 0.75f, 0.1f, 0.12f)
+        assertTrue(SubjectRules.penalty(view, listOf(low), view) > 0.2f)
+    }
+
+    @Test
     fun engineLocksAfterConsistentSuggestionsAndGuides() {
         val engine = GuidanceEngine(lens)
         val s = Suggestion(Box(0.75f, 0.5f, 0.6f, 0.6f), gain = 1f, cameraZoom = 1f, rotation = identity, steady = true)

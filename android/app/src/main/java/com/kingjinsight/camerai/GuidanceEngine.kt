@@ -11,6 +11,8 @@ class Suggestion(
     val cameraZoom: Float,
     val rotation: FloatArray,
     val steady: Boolean,
+    /** Detected heads in camera-frame coordinates. */
+    val heads: List<Box> = emptyList(),
 )
 
 enum class Phase { Searching, Good, Guiding, Aligned }
