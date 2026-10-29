@@ -25,14 +25,18 @@ up and steady, it can take the photo for you.
    model's size bias, and suggests shifting the viewfinder toward the best one (gain ≥ 0.6). On
    GAICD frames shifted away from the photographer's framing, the hint points back toward it 82%
    of the time.
-4. **World anchoring.** After 3 consistent frames, the target is locked as a direction in world
+4. **People.** ML Kit's bundled face detector finds heads in each frame. Framings that cut through a
+   head (−1.5) or drop someone who is in the current shot (−1.0) are penalized, and the main
+   person's eye line is pulled toward the upper third. The current view gets the same penalties,
+   so a shot that clips someone triggers guidance even when the crop model is happy.
+5. **World anchoring.** After 3 consistent frames, the target is locked as a direction in world
    space, using the rotation-vector sensor. It stays in place on screen while you move the
    phone, and the hints are recomputed from the gyroscope at 60 Hz, not just at model rate.
-5. **Guidance.** The overlay shows the target box, a target dot to bring into the center ring,
+6. **Guidance.** The overlay shows the target box, a target dot to bring into the center ring,
    and an edge arrow when the target is off screen. Text hints read like `向右上移动 · 放大到 1.8×`
    ("move up and right · zoom to 1.8×"). Tap `对准 x×` ("go to x×") to zoom to the target
    automatically.
-6. **Capture.** When the shot is aligned (center within 5%, size within 8%) and held steady for
+7. **Capture.** When the shot is aligned (center within 5%, size within 8%) and held steady for
    0.8 s, auto-capture fires. The app switches to the viewfinder's native zoom for the shot
    (main lens, not a crop of the ultra-wide) and saves to `Pictures/CamerAI`.
 

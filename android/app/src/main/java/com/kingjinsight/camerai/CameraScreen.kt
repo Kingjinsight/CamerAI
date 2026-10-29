@@ -63,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size as GSize
 import androidx.compose.ui.graphics.Color
@@ -104,6 +105,7 @@ import kotlin.math.sin
 /** Camera frame width relative to the viewfinder, so the model sees what lies outside it. */
 private const val CONTEXT = 1.5f
 private const val ZOOM_SETTLE_MS = 600L
+private const val LEVEL_DEGREES = 1.5f
 
 private val Amber = Color(0xFFFFC83D)
 private val Green = Color(0xFF4CD964)
@@ -138,6 +140,7 @@ fun CameraScreen() {
     var zoomChangedAt by remember { mutableLongStateOf(0L) }
     var inferenceMs by remember { mutableLongStateOf(0L) }
     var gain by remember { mutableFloatStateOf(0f) }
+    var heads by remember { mutableStateOf<List<Box>>(emptyList()) }
     var autoCapture by remember { mutableStateOf(true) }
     var capturing by remember { mutableStateOf(false) }
     var frozen by remember { mutableStateOf<Bitmap?>(null) }
@@ -186,6 +189,7 @@ fun CameraScreen() {
 
     DisposableEffect(lifecycleOwner) {
         val model = CompositionModel(context)
+        val subjects = SubjectDetector()
         val executor = Executors.newSingleThreadExecutor()
         val analysis = ImageAnalysis.Builder()
             .setResolutionSelector(
@@ -199,6 +203,7 @@ fun CameraScreen() {
         val main = ContextCompat.getMainExecutor(context)
         analysis.setAnalyzer(executor, CompositionAnalyzer(
             model,
+            subjects,
             zoom = {
                 val settled = SystemClock.elapsedRealtime() - zoomChangedAt > ZOOM_SETTLE_MS
                 if (settled && !capturing && camera != null) ZoomSnapshot(cameraZoom, userZoom) else null
@@ -209,6 +214,9 @@ fun CameraScreen() {
                 engine.onSuggestion(suggestion)
                 inferenceMs = ms
                 gain = suggestion.gain
+                // Frame -> viewfinder coordinates: the viewfinder is a centered digital crop of the frame.
+                val d = userZoom / suggestion.cameraZoom
+                heads = suggestion.heads.map { Box(0.5f + (it.cx - 0.5f) * d, 0.5f + (it.cy - 0.5f) * d, it.w * d, it.h * d) }
                 tick = SystemClock.elapsedRealtime()
             }
         })
@@ -245,7 +253,10 @@ fun CameraScreen() {
             lifecycleOwner.lifecycle.removeObserver(observer)
             motion.stop()
             analysis.clearAnalyzer()
-            executor.execute { model.close() }
+            executor.execute {
+                model.close()
+                subjects.close()
+            }
             executor.shutdown()
             runCatching { providerFuture.get().unbindAll() }
         }
@@ -280,7 +291,8 @@ fun CameraScreen() {
                     Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                 }
             }
-            Canvas(Modifier.fillMaxSize()) { drawOverlay(guidance) }
+            val horizon = Geometry.horizon(motion.rotation)
+            Canvas(Modifier.fillMaxSize()) { drawOverlay(guidance, heads, horizon) }
             HintChip(guidance, autoCapture, Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
             Text(
                 "镜头 %.1f–%.0f× · 取景 %.2f× · 相机 %.2f× · %dms · Δ%.2f".format(minZoom, maxZoom, userZoom, cameraZoom, inferenceMs, gain),
@@ -318,7 +330,7 @@ fun CameraScreen() {
     }
 }
 
-private fun DrawScope.drawOverlay(g: Guidance) {
+private fun DrawScope.drawOverlay(g: Guidance, heads: List<Box>, horizon: Horizon?) {
     val w = size.width
     val h = size.height
     val faint = Color.White.copy(alpha = 0.25f)
@@ -326,10 +338,20 @@ private fun DrawScope.drawOverlay(g: Guidance) {
         drawLine(faint, Offset(w * i / 3, 0f), Offset(w * i / 3, h), 1.dp.toPx())
         drawLine(faint, Offset(0f, h * i / 3), Offset(w, h * i / 3), 1.dp.toPx())
     }
+    for (head in heads) {
+        drawRoundRect(
+            Color.White.copy(alpha = 0.7f),
+            topLeft = Offset(head.left * w, head.top * h),
+            size = GSize(head.w * w, head.h * h),
+            cornerRadius = CornerRadius(8.dp.toPx()),
+            style = Stroke(1.5.dp.toPx()),
+        )
+    }
     val center = Offset(w / 2, h / 2)
     val box = g.box
     val color = if (g.phase == Phase.Aligned) Green else Amber
     drawCircle(Color.White, 16.dp.toPx(), center, style = Stroke(2.dp.toPx()))
+    horizon?.let { drawLevel(it, center) }
     if (box == null || g.phase == Phase.Good || g.phase == Phase.Searching) return
 
     drawRect(
@@ -363,6 +385,20 @@ private fun DrawScope.drawOverlay(g: Guidance) {
             close()
         }
         drawPath(path, color)
+    }
+}
+
+/** Line along the true horizon beside the center ring, with fixed ticks to line it up against; green when level. */
+private fun DrawScope.drawLevel(h: Horizon, center: Offset) {
+    val color = if (abs(h.rollDegrees) < LEVEL_DEGREES) Green else Color.White.copy(alpha = 0.8f)
+    val dir = Offset(h.dx, h.dy)
+    val gap = 24.dp.toPx()
+    val reach = size.width * 0.28f
+    val tick = 14.dp.toPx()
+    for (side in listOf(-1f, 1f)) {
+        drawLine(color, center + dir * (side * gap), center + dir * (side * reach), 2.dp.toPx())
+        val x = center.x + side * (reach + 6.dp.toPx())
+        drawLine(color.copy(alpha = 0.6f), Offset(x, center.y), Offset(x + side * tick, center.y), 2.dp.toPx())
     }
 }
 

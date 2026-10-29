@@ -65,12 +65,45 @@ class GeometryTest {
     }
 
     @Test
+    fun horizonFollowsRoll() {
+        // Phone upright in portrait: device +Y is world up.
+        val upright = floatArrayOf(1f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f)
+        val level = Geometry.horizon(upright)!!
+        assertEquals(0f, level.rollDegrees, 1e-4f)
+        assertEquals(1f, level.dx, 1e-6f)
+        assertEquals(0f, level.dy, 1e-6f)
+        // Lying flat (camera pointing down): no horizon.
+        assertNull(Geometry.horizon(identity))
+        // Rolled: world up leans toward device +X, so the horizon tilts down to the right on screen.
+        val a = Math.toRadians(10.0).toFloat()
+        val rolled = floatArrayOf(cos(a), -sin(a), 0f, 0f, 0f, -1f, sin(a), cos(a), 0f)
+        val h = Geometry.horizon(rolled)!!
+        assertEquals(10f, h.rollDegrees, 1e-3f)
+        assertTrue(h.dy > 0f)
+    }
+
+    @Test
     fun panCandidatesCenterTheMiddleWindow() {
         val boxes = Geometry.panCandidates(0.7f)
         assertEquals(25, boxes.size)
         assertEquals(Box(0.5f, 0.5f, 0.7f, 0.7f), boxes[12])
         assertEquals(0.35f, boxes[0].cx, 1e-6f)
         assertEquals(0.65f, boxes[24].cy, 1e-6f)
+    }
+
+    @Test
+    fun subjectRulesPenalizeCutsAndDropsAndRewardThirds() {
+        val view = Box(0.5f, 0.5f, 0.6f, 0.6f)
+        val head = Box(0.5f, 0.41f, 0.1f, 0.12f)
+        // Eyes at the upper third of the view: no penalty.
+        assertEquals(0f, SubjectRules.penalty(view, listOf(head), view), 1e-6f)
+        // A framing whose edge runs through the head.
+        assertTrue(SubjectRules.penalty(Box(0.5f, 0.66f, 0.6f, 0.6f), listOf(head), view) >= 1.5f)
+        // A framing that leaves the person out entirely.
+        assertTrue(SubjectRules.penalty(Box(0.25f, 0.8f, 0.3f, 0.3f), listOf(head), view) >= 1f)
+        // Head low in the frame costs more than head near the third.
+        val low = Box(0.5f, 0.75f, 0.1f, 0.12f)
+        assertTrue(SubjectRules.penalty(view, listOf(low), view) > 0.2f)
     }
 
     @Test
