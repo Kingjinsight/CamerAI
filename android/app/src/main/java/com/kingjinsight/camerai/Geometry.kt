@@ -1,6 +1,7 @@
 package com.kingjinsight.camerai
 
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.hypot
@@ -20,6 +21,9 @@ data class Box(val cx: Float, val cy: Float, val w: Float, val h: Float) {
     val left get() = cx - w / 2
     val top get() = cy - h / 2
 }
+
+/** True horizon on screen: unit direction (x right, y down) and the phone's roll in degrees. */
+class Horizon(val dx: Float, val dy: Float, val rollDegrees: Float)
 
 /**
  * A framing anchored in the world: unit direction of its center in world coordinates and
@@ -50,6 +54,16 @@ object Geometry {
         val ty = -dev[1] / depth
         val size = userZoom / target.zoom
         return Box(0.5f + tx * lens.fx1 * userZoom, 0.5f + ty * lens.fy1 * userZoom, size, size)
+    }
+
+    /** Horizon for device rotation [rot]; null when the phone points nearly straight up or down. */
+    fun horizon(rot: FloatArray): Horizon? {
+        // World up expressed in device coordinates is the third row of the device -> world matrix.
+        val ux = rot[6]
+        val uy = rot[7]
+        if (abs(rot[8]) > 0.85f) return null
+        val n = hypot(ux, uy)
+        return Horizon(uy / n, ux / n, Math.toDegrees(atan2(ux, uy).toDouble()).toFloat())
     }
 
     /** True when two targets describe nearly the same framing (one candidate-grid step apart at most). */

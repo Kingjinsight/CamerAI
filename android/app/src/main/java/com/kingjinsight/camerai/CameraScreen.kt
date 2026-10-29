@@ -105,6 +105,7 @@ import kotlin.math.sin
 /** Camera frame width relative to the viewfinder, so the model sees what lies outside it. */
 private const val CONTEXT = 1.5f
 private const val ZOOM_SETTLE_MS = 600L
+private const val LEVEL_DEGREES = 1.5f
 
 private val Amber = Color(0xFFFFC83D)
 private val Green = Color(0xFF4CD964)
@@ -290,7 +291,8 @@ fun CameraScreen() {
                     Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                 }
             }
-            Canvas(Modifier.fillMaxSize()) { drawOverlay(guidance, heads) }
+            val horizon = Geometry.horizon(motion.rotation)
+            Canvas(Modifier.fillMaxSize()) { drawOverlay(guidance, heads, horizon) }
             HintChip(guidance, autoCapture, Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
             Text(
                 "镜头 %.1f–%.0f× · 取景 %.2f× · 相机 %.2f× · %dms · Δ%.2f".format(minZoom, maxZoom, userZoom, cameraZoom, inferenceMs, gain),
@@ -328,7 +330,7 @@ fun CameraScreen() {
     }
 }
 
-private fun DrawScope.drawOverlay(g: Guidance, heads: List<Box>) {
+private fun DrawScope.drawOverlay(g: Guidance, heads: List<Box>, horizon: Horizon?) {
     val w = size.width
     val h = size.height
     val faint = Color.White.copy(alpha = 0.25f)
@@ -349,6 +351,7 @@ private fun DrawScope.drawOverlay(g: Guidance, heads: List<Box>) {
     val box = g.box
     val color = if (g.phase == Phase.Aligned) Green else Amber
     drawCircle(Color.White, 16.dp.toPx(), center, style = Stroke(2.dp.toPx()))
+    horizon?.let { drawLevel(it, center) }
     if (box == null || g.phase == Phase.Good || g.phase == Phase.Searching) return
 
     drawRect(
@@ -382,6 +385,20 @@ private fun DrawScope.drawOverlay(g: Guidance, heads: List<Box>) {
             close()
         }
         drawPath(path, color)
+    }
+}
+
+/** Line along the true horizon beside the center ring, with fixed ticks to line it up against; green when level. */
+private fun DrawScope.drawLevel(h: Horizon, center: Offset) {
+    val color = if (abs(h.rollDegrees) < LEVEL_DEGREES) Green else Color.White.copy(alpha = 0.8f)
+    val dir = Offset(h.dx, h.dy)
+    val gap = 24.dp.toPx()
+    val reach = size.width * 0.28f
+    val tick = 14.dp.toPx()
+    for (side in listOf(-1f, 1f)) {
+        drawLine(color, center + dir * (side * gap), center + dir * (side * reach), 2.dp.toPx())
+        val x = center.x + side * (reach + 6.dp.toPx())
+        drawLine(color.copy(alpha = 0.6f), Offset(x, center.y), Offset(x + side * tick, center.y), 2.dp.toPx())
     }
 }
 

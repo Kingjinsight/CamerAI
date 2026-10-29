@@ -65,6 +65,24 @@ class GeometryTest {
     }
 
     @Test
+    fun horizonFollowsRoll() {
+        // Phone upright in portrait: device +Y is world up.
+        val upright = floatArrayOf(1f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f)
+        val level = Geometry.horizon(upright)!!
+        assertEquals(0f, level.rollDegrees, 1e-4f)
+        assertEquals(1f, level.dx, 1e-6f)
+        assertEquals(0f, level.dy, 1e-6f)
+        // Lying flat (camera pointing down): no horizon.
+        assertNull(Geometry.horizon(identity))
+        // Rolled: world up leans toward device +X, so the horizon tilts down to the right on screen.
+        val a = Math.toRadians(10.0).toFloat()
+        val rolled = floatArrayOf(cos(a), -sin(a), 0f, 0f, 0f, -1f, sin(a), cos(a), 0f)
+        val h = Geometry.horizon(rolled)!!
+        assertEquals(10f, h.rollDegrees, 1e-3f)
+        assertTrue(h.dy > 0f)
+    }
+
+    @Test
     fun panCandidatesCenterTheMiddleWindow() {
         val boxes = Geometry.panCandidates(0.7f)
         assertEquals(25, boxes.size)
