@@ -137,6 +137,7 @@ fun CameraScreen() {
     var cameraZoom by remember { mutableFloatStateOf(1f) }
     var zoomChangedAt by remember { mutableLongStateOf(0L) }
     var inferenceMs by remember { mutableLongStateOf(0L) }
+    var gain by remember { mutableFloatStateOf(0f) }
     var autoCapture by remember { mutableStateOf(true) }
     var capturing by remember { mutableStateOf(false) }
     var frozen by remember { mutableStateOf<Bitmap?>(null) }
@@ -207,6 +208,7 @@ fun CameraScreen() {
             main.execute {
                 engine.onSuggestion(suggestion)
                 inferenceMs = ms
+                gain = suggestion.gain
                 tick = SystemClock.elapsedRealtime()
             }
         })
@@ -217,9 +219,7 @@ fun CameraScreen() {
             val preview = Preview.Builder().setResolutionSelector(ratio4x3().build()).build()
             preview.surfaceProvider = previewView.surfaceProvider
             provider.unbindAll()
-            val cam = provider.bindToLifecycle(
-                lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, imageCapture
-            )
+            val cam = provider.bindToLifecycle(lifecycleOwner, widestBackCamera(provider), preview, analysis, imageCapture)
             camera = cam
             engine.lens = lensOf(cam.cameraInfo)
             cameraZoom = 1f
@@ -283,7 +283,7 @@ fun CameraScreen() {
             Canvas(Modifier.fillMaxSize()) { drawOverlay(guidance) }
             HintChip(guidance, autoCapture, Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
             Text(
-                "镜头 %.1f–%.0f× · 取景 %.2f× · 相机 %.2f× · %dms".format(minZoom, maxZoom, userZoom, cameraZoom, inferenceMs),
+                "镜头 %.1f–%.0f× · 取景 %.2f× · 相机 %.2f× · %dms · Δ%.2f".format(minZoom, maxZoom, userZoom, cameraZoom, inferenceMs, gain),
                 color = Color.White.copy(alpha = 0.6f), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.BottomStart).padding(6.dp)
             )
@@ -456,6 +456,17 @@ private fun Thumbnail(uri: Uri?, context: Context) {
         bitmap?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
     }
 }
+
+/**
+ * The back camera reaching the lowest zoom. Phones often list the main lens alone first (1x only),
+ * with the logical multi-camera that includes the ultra-wide (e.g. 0.6x) under another id.
+ */
+private fun widestBackCamera(provider: ProcessCameraProvider): CameraSelector =
+    provider.availableCameraInfos
+        .filter { it.lensFacing == CameraSelector.LENS_FACING_BACK }
+        .minByOrNull { it.zoomState.value?.minZoomRatio ?: 1f }
+        ?.cameraSelector
+        ?: CameraSelector.DEFAULT_BACK_CAMERA
 
 private fun ratio4x3() = ResolutionSelector.Builder()
     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)

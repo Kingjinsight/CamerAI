@@ -20,6 +20,11 @@ up and steady, it can take the photo for you.
    from `training/calibrate.py`) is subtracted, along with a penalty for distance from the current
    view. The best candidate must beat the current view by 0.8 MOS standard deviations to trigger
    guidance. Otherwise the app reports that the framing is fine.
+   When the camera cannot be at least 1.25× wider than the viewfinder (no ultra-wide at 1×), the
+   app switches to **pan mode**. It compares equal-size windows at 5×5 positions, which cancels the
+   model's size bias, and suggests shifting the viewfinder toward the best one (gain ≥ 0.6). On
+   GAICD frames shifted away from the photographer's framing, the hint points back toward it 82%
+   of the time.
 4. **World anchoring.** After 3 consistent frames, the target is locked as a direction in world
    space, using the rotation-vector sensor. It stays in place on screen while you move the
    phone, and the hints are recomputed from the gyroscope at 60 Hz, not just at model rate.
@@ -60,7 +65,9 @@ images) are written to `checkpoints/test_metrics.json`. The bundled model (epoch
 SRCC 0.784, Acc5 46.3 and Acc10 67.0 on that test set.
 
 On a phone that does not expose its ultra-wide lens, the camera cannot be wider than the
-viewfinder at 1×, so guidance only starts once the viewfinder is zoomed to about 1.5× or more.
+viewfinder at 1×, so 1× uses pan-only guidance and zoom hints start at about 1.25×. vivo
+X100 Ultra (OriginOS 6) is one such phone: its 0.6× logical camera is limited to the packages in
+`vendor.camera.aux.packagelist`.
 
 ## Build the app
 

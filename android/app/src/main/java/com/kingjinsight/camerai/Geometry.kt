@@ -52,12 +52,12 @@ object Geometry {
         return Box(0.5f + tx * lens.fx1 * userZoom, 0.5f + ty * lens.fy1 * userZoom, size, size)
     }
 
-    /** True when two targets describe nearly the same framing. */
+    /** True when two targets describe nearly the same framing (one candidate-grid step apart at most). */
     fun similar(a: Target, b: Target, lens: Lens): Boolean {
         val dot = (a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1] + a.dir[2] * b.dir[2]).coerceIn(-1f, 1f)
         val angle = sqrt(2f * (1f - dot))
         val width = 1f / (lens.fx1 * minOf(a.zoom, b.zoom))
-        return angle < 0.25f * width && abs(ln(a.zoom / b.zoom)) < 0.2f
+        return angle < 0.1f * width && abs(ln(a.zoom / b.zoom)) < 0.2f
     }
 
     fun average(targets: List<Target>): Target {
@@ -88,6 +88,12 @@ object Geometry {
             }
         }
         return out
+    }
+
+    /** Equal-size windows of side [size] on an n x n grid over the frame; the middle one is centered. */
+    fun panCandidates(size: Float, n: Int = 5): List<Box> {
+        val step = (1f - size) / (n - 1)
+        return List(n * n) { i -> Box(size / 2 + (i % n) * step, size / 2 + (i / n) * step, size, size) }
     }
 
     /** Distance of [box] from the current view, in view widths plus log zoom change. */

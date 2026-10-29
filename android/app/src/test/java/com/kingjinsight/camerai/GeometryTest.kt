@@ -65,6 +65,15 @@ class GeometryTest {
     }
 
     @Test
+    fun panCandidatesCenterTheMiddleWindow() {
+        val boxes = Geometry.panCandidates(0.7f)
+        assertEquals(25, boxes.size)
+        assertEquals(Box(0.5f, 0.5f, 0.7f, 0.7f), boxes[12])
+        assertEquals(0.35f, boxes[0].cx, 1e-6f)
+        assertEquals(0.65f, boxes[24].cy, 1e-6f)
+    }
+
+    @Test
     fun engineLocksAfterConsistentSuggestionsAndGuides() {
         val engine = GuidanceEngine(lens)
         val s = Suggestion(Box(0.75f, 0.5f, 0.6f, 0.6f), gain = 1f, cameraZoom = 1f, rotation = identity, steady = true)
