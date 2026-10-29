@@ -1,1 +1,10 @@
 Dataset/
+.DS_Store
+__pycache__/
+data/
+checkpoints/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
