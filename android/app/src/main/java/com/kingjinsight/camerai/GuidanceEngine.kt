@@ -4,7 +4,9 @@ import kotlin.math.abs
 
 /** Model output for one analysis frame, in camera-frame coordinates. */
 class Suggestion(
-    val best: Box,
+    /** Framing worth guiding toward, or null when the current one is as good as it gets nearby. */
+    val best: Box?,
+    /** Predicted score gain of the best framing (MOS std), shown for tuning. */
     val gain: Float,
     val cameraZoom: Float,
     val rotation: FloatArray,
@@ -45,14 +47,15 @@ class GuidanceEngine(var lens: Lens = Lens.DEFAULT) {
     }
 
     fun onSuggestion(s: Suggestion) {
-        if (s.gain < GOOD_GAIN) {
+        val best = s.best
+        if (best == null) {
             recent.clear()
             goodStreak++
             if (goodStreak >= 2 && !aligned) target = null
             return
         }
         goodStreak = 0
-        val fresh = Geometry.anchor(s.best, s.cameraZoom, lens, s.rotation)
+        val fresh = Geometry.anchor(best, s.cameraZoom, lens, s.rotation)
         val current = target
         if (current == null) {
             if (recent.isNotEmpty() && !Geometry.similar(recent.last(), fresh, lens)) recent.clear()
@@ -106,8 +109,6 @@ class GuidanceEngine(var lens: Lens = Lens.DEFAULT) {
     }
 
     companion object {
-        /** Minimum predicted score gain (MOS standard deviations) worth guiding toward. */
-        const val GOOD_GAIN = 0.8f
         const val LOCK_FRAMES = 3
         const val RELOCK_FRAMES = 5
         const val PAN_TOL = 0.05f
