@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import org.json.JSONObject
 import java.io.Closeable
 import java.nio.FloatBuffer
+import kotlin.math.abs
 
 /** GAIC crop scorer (training/model.py) running on ONNX Runtime. Scores are MOS z-scores. */
 class CompositionModel(context: Context) : Closeable {
@@ -19,9 +20,17 @@ class CompositionModel(context: Context) : Closeable {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
         },
     )
-    private val prior = JSONObject(context.assets.open("gaic.json").bufferedReader().use { it.readText() })
-        .getJSONArray("size_prior")
-        .let { a -> Array(a.length()) { i -> a.getJSONArray(i).let { floatArrayOf(it.getDouble(0).toFloat(), it.getDouble(1).toFloat()) } } }
+    /** Size-bias tables keyed by how much wider the camera frame is than the viewfinder. */
+    private val priors = JSONObject(context.assets.open("gaic.json").bufferedReader().use { it.readText() })
+        .getJSONObject("size_prior")
+        .let { o ->
+            o.keys().asSequence().associate { key ->
+                val a = o.getJSONArray(key)
+                key.toFloat() to Array(a.length()) { i ->
+                    a.getJSONArray(i).let { floatArrayOf(it.getDouble(0).toFloat(), it.getDouble(1).toFloat()) }
+                }
+            }
+        }
     private val pixels = IntArray(INPUT_W * INPUT_H)
     private val image = FloatBuffer.allocate(3 * INPUT_W * INPUT_H)
 
@@ -51,8 +60,12 @@ class CompositionModel(context: Context) : Closeable {
         }
     }
 
-    /** Mean score change the model gives a framing of [relativeSize] x the viewfinder (training/calibrate.py). */
-    fun sizePrior(relativeSize: Float): Float {
+    /**
+     * Mean score change the model gives a framing of [relativeSize] x the viewfinder when the camera
+     * frame is [context] x wider than it (training/calibrate.py).
+     */
+    fun sizePrior(relativeSize: Float, context: Float): Float {
+        val prior = priors.minBy { abs(it.key - context) }.value
         if (relativeSize <= prior.first()[0]) return prior.first()[1]
         for (i in 1 until prior.size) {
             val (r1, b1) = prior[i]

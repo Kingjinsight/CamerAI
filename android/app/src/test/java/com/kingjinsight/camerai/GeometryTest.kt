@@ -118,6 +118,44 @@ class GeometryTest {
     }
 
     @Test
+    fun lockedTargetSurvivesQuietFrames() {
+        val engine = GuidanceEngine(lens)
+        val s = Suggestion(Box(0.75f, 0.5f, 0.6f, 0.6f), gain = 1f, cameraZoom = 1f, rotation = identity, steady = true)
+        repeat(GuidanceEngine.LOCK_FRAMES) { engine.onSuggestion(s) }
+        val quiet = Suggestion(null, gain = 0.1f, cameraZoom = 1f, rotation = identity, steady = true, lockedDeficit = 0f)
+        repeat(20) { engine.onSuggestion(quiet) }
+        assertEquals(Phase.Guiding, engine.update(1f, 1f, identity, true, 0).phase)
+    }
+
+    @Test
+    fun lockedTargetReplacedOnlyByRepeatedClearlyBetterFraming() {
+        val engine = GuidanceEngine(lens)
+        val a = Suggestion(Box(0.75f, 0.5f, 0.6f, 0.6f), gain = 1f, cameraZoom = 1f, rotation = identity, steady = true)
+        repeat(GuidanceEngine.LOCK_FRAMES) { engine.onSuggestion(a) }
+        fun other(deficit: Float) = Suggestion(Box(0.25f, 0.5f, 0.6f, 0.6f), gain = 1f, cameraZoom = 1f,
+            rotation = identity, steady = true, lockedDeficit = deficit)
+        // Slightly better elsewhere: keep the locked target.
+        repeat(20) { engine.onSuggestion(other(0.2f)) }
+        assertTrue(engine.update(1f, 1f, identity, true, 0).box!!.cx > 0.5f)
+        // Clearly better, but one frame short of the streak: still the old target.
+        repeat(GuidanceEngine.RELOCK_FRAMES - 1) { engine.onSuggestion(other(1f)) }
+        assertTrue(engine.update(1f, 1f, identity, true, 0).box!!.cx > 0.5f)
+        engine.onSuggestion(other(1f))
+        assertTrue(engine.update(1f, 1f, identity, true, 0).box!!.cx < 0.5f)
+    }
+
+    @Test
+    fun lockedTargetGivenUpAfterBeingOutOfViewTooLong() {
+        val engine = GuidanceEngine(lens)
+        val s = Suggestion(Box(0.75f, 0.5f, 0.6f, 0.6f), gain = 1f, cameraZoom = 1f, rotation = identity, steady = true)
+        repeat(GuidanceEngine.LOCK_FRAMES) { engine.onSuggestion(s) }
+        val away = yawRight(Math.PI.toFloat())
+        assertEquals(Phase.Guiding, engine.update(1f, 1f, away, true, 0).phase)
+        assertEquals(Phase.Guiding, engine.update(1f, 1f, away, true, GuidanceEngine.LOST_MS).phase)
+        assertEquals(Phase.Searching, engine.update(1f, 1f, away, true, GuidanceEngine.LOST_MS + 1).phase)
+    }
+
+    @Test
     fun engineHoldsWhenAligned() {
         val engine = GuidanceEngine(lens)
         val s = Suggestion(Box(0.5f, 0.5f, 0.98f, 0.98f), gain = 1f, cameraZoom = 1f, rotation = identity, steady = true)
