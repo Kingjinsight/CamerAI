@@ -16,24 +16,30 @@ up and steady, it can take the photo for you.
    MobileNetV2, RoI + RoD alignment). The model scores about 200 candidate framings: the
    current view plus shifted, larger (zoom out) and smaller (zoom in) boxes, all at the
    photo's 3:4 aspect ratio.
-3. **Decision.** GAIC prefers bigger crops, so half of its measured size bias (`size_prior`,
-   from `training/calibrate.py`) is subtracted, along with a penalty for distance from the current
-   view. The best candidate must beat the current view by 0.8 MOS standard deviations to trigger
-   guidance. Otherwise the app reports that the framing is fine.
-   When the camera cannot be at least 1.25× wider than the viewfinder (no ultra-wide at 1×), the
-   app switches to **pan mode**. It compares equal-size windows at 5×5 positions, which cancels the
-   model's size bias, and suggests shifting the viewfinder toward the best one (gain ≥ 0.6). On
-   GAICD frames shifted away from the photographer's framing, the hint points back toward it 82%
-   of the time.
+3. **Decision.** GAIC prefers bigger crops, so part of its measured size bias (`size_prior`, from
+   `training/calibrate.py`, calibrated separately for 1.5× context and for 1× with no context) is
+   subtracted, along with a penalty for distance from the current view.
+   - With context, the best candidate must beat the current view by 0.4 MOS standard deviations
+     (~68% of GAICD frames get guidance).
+   - At 1× with no ultra-wide, candidates zoom in and shift inside the frame, and the threshold is
+     0.3. About 72% of frames get a "zoom to ~1.5× and move" target, and the chosen framing stays
+     put after a 3% frame shift 89% of the time.
+   - If nothing passes, a pan-only fallback compares equal-size windows at 5×5 positions.
 4. **People.** ML Kit's bundled face detector finds heads in each frame. Framings that cut through a
    head (−1.5) or drop someone who is in the current shot (−1.0) are penalized, and the main
    person's eye line is pulled toward the upper third. The current view gets the same penalties,
    so a shot that clips someone triggers guidance even when the crop model is happy.
 5. **World anchoring.** After 3 consistent frames, the target is locked as a direction in world
-   space, using the rotation-vector sensor. It stays in place on screen while you move the
-   phone, and the hints are recomputed from the gyroscope at 60 Hz, not just at model rate.
+   space, using the rotation-vector sensor. It stays in place on screen while you move or zoom,
+   and the hints are recomputed from the gyroscope at 60 Hz, not just at model rate. The lock
+   persists. The locked target is re-scored with every frame and is replaced only when another
+   framing beats it by 0.5 for 6 frames in a row. It is dropped after capture, after 8 s out of
+   view, or when you tap **重新取景** ("re-frame").
 6. **Guidance.** The overlay shows the target box, a target dot to bring into the center ring,
-   and an edge arrow when the target is off screen. Text hints read like `向右上移动 · 放大到 1.8×`
+   an edge arrow when the target is off screen, and a level line.
+   Zooming is digital at once. The camera follows about 1.5× wider in small per-frame steps, and the
+   digital crop tracks the zoom each preview frame actually arrived at (`CONTROL_ZOOM_RATIO`), so
+   zooming is smooth and never shows black edges. Text hints read like `向右上移动 · 放大到 1.8×`
    ("move up and right · zoom to 1.8×"). Tap `对准 x×` ("go to x×") to zoom to the target
    automatically.
 7. **Capture.** When the shot is aligned (center within 5%, size within 8%) and held steady for
@@ -69,7 +75,8 @@ images) are written to `checkpoints/test_metrics.json`. The bundled model (epoch
 SRCC 0.784, Acc5 46.3 and Acc10 67.0 on that test set.
 
 On a phone that does not expose its ultra-wide lens, the camera cannot be wider than the
-viewfinder at 1×, so 1× uses pan-only guidance and zoom hints start at about 1.25×. vivo
+viewfinder at 1×, so 1× guidance can only zoom in and shift, and zoom-out hints start at about
+1.25×. vivo
 X100 Ultra (OriginOS 6) is one such phone: its 0.6× logical camera is limited to the packages in
 `vendor.camera.aux.packagelist`.
 

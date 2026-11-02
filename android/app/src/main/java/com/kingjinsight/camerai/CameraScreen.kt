@@ -4,7 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.MediaStore
@@ -12,6 +16,7 @@ import android.util.Size
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraInfo
@@ -59,6 +64,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,6 +92,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -98,13 +105,20 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.hypot
+import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
 /** Camera frame width relative to the viewfinder, so the model sees what lies outside it. */
 private const val CONTEXT = 1.5f
 private const val ZOOM_SETTLE_MS = 600L
+
+/** Fastest the camera zoom moves (x per second); small per-frame steps keep the digital crop's catch-up invisible. */
+private const val ZOOM_IN_RATE = 2.5f
+private const val ZOOM_OUT_RATE = 6f
 private const val LEVEL_DEGREES = 1.5f
 
 private val Amber = Color(0xFFFFC83D)
@@ -136,7 +150,13 @@ fun CameraScreen() {
     var minZoom by remember { mutableFloatStateOf(1f) }
     var maxZoom by remember { mutableFloatStateOf(1f) }
     var userZoom by remember { mutableFloatStateOf(1f) }
+    // Zoom last requested from the camera, and the zoom its frames actually arrive at (lags while changing).
     var cameraZoom by remember { mutableFloatStateOf(1f) }
+    var frameZoom by remember { mutableFloatStateOf(1f) }
+    var frameZoomReported by remember { mutableStateOf(false) }
+    var cameraTarget by remember { mutableFloatStateOf(1f) }
+    var zoomRamp by remember { mutableStateOf<Job?>(null) }
+    var captureScale by remember { mutableFloatStateOf(1f) }
     var zoomChangedAt by remember { mutableLongStateOf(0L) }
     var inferenceMs by remember { mutableLongStateOf(0L) }
     var gain by remember { mutableFloatStateOf(0f) }
@@ -147,23 +167,46 @@ fun CameraScreen() {
     var lastPhoto by remember { mutableStateOf<Uri?>(null) }
     val zoomAnim = remember { Animatable(1f) }
 
-    fun setZoom(requested: Float) {
+    // The viewfinder cannot be wider than the frames the camera is delivering: on a fast zoom-out it
+    // lags a frame or two behind the fingers instead of showing black edges.
+    val viewZoom = max(userZoom, frameZoom)
+
+    /** Walks the camera toward [cameraTarget] a little each display frame. */
+    fun rampCamera() {
         val cam = camera ?: return
-        userZoom = requested.coerceIn(minZoom, maxZoom)
-        val digital = userZoom / cameraZoom
-        val atWidest = cameraZoom <= minZoom * 1.001f
-        // Keep the camera ~CONTEXT wider than the viewfinder; only retune outside a band to avoid lens hopping.
-        if (!(digital in 1.25f..1.8f || (atWidest && digital in 1f..1.8f))) {
-            cameraZoom = (userZoom / CONTEXT).coerceIn(minZoom, maxZoom)
-            cam.cameraControl.setZoomRatio(cameraZoom)
-            zoomChangedAt = SystemClock.elapsedRealtime()
+        if (zoomRamp?.isActive == true) return
+        zoomRamp = scope.launch {
+            var last = withFrameNanos { it }
+            while (abs(cameraZoom - cameraTarget) > 0.001f) {
+                val now = withFrameNanos { it }
+                val dt = (now - last) / 1e9f
+                last = now
+                cameraZoom = if (cameraTarget > cameraZoom) {
+                    min(cameraTarget, cameraZoom * exp(ln(ZOOM_IN_RATE) * dt))
+                } else {
+                    max(cameraTarget, cameraZoom / exp(ln(ZOOM_OUT_RATE) * dt))
+                }
+                cam.cameraControl.setZoomRatio(cameraZoom)
+                // Devices that do not report per-frame zoom: assume each step applies right away.
+                if (!frameZoomReported) frameZoom = cameraZoom
+            }
         }
+    }
+
+    /** Zooming is digital at once; the camera follows ~CONTEXT wider and the crop tracks each frame's real zoom. */
+    fun setZoom(requested: Float) {
+        if (camera == null) return
+        userZoom = requested.coerceIn(minZoom, maxZoom)
+        cameraTarget = (userZoom / CONTEXT).coerceIn(minZoom, maxZoom)
+        rampCamera()
     }
 
     fun capture() {
         val cam = camera ?: return
         if (capturing) return
         capturing = true
+        zoomRamp?.cancel()
+        captureScale = max(userZoom, frameZoom) / frameZoom
         frozen = previewView.bitmap
         scope.launch {
             try {
@@ -206,16 +249,17 @@ fun CameraScreen() {
             subjects,
             zoom = {
                 val settled = SystemClock.elapsedRealtime() - zoomChangedAt > ZOOM_SETTLE_MS
-                if (settled && !capturing && camera != null) ZoomSnapshot(cameraZoom, userZoom) else null
+                if (settled && !capturing && camera != null) ZoomSnapshot(frameZoom, max(userZoom, frameZoom)) else null
             },
             motion = motion,
+            locked = { cz, rot -> engine.lockedFrameBox(cz, rot) },
         ) { suggestion, ms ->
             main.execute {
                 engine.onSuggestion(suggestion)
                 inferenceMs = ms
                 gain = suggestion.gain
                 // Frame -> viewfinder coordinates: the viewfinder is a centered digital crop of the frame.
-                val d = userZoom / suggestion.cameraZoom
+                val d = max(userZoom, frameZoom) / suggestion.cameraZoom
                 heads = suggestion.heads.map { Box(0.5f + (it.cx - 0.5f) * d, 0.5f + (it.cy - 0.5f) * d, it.w * d, it.h * d) }
                 tick = SystemClock.elapsedRealtime()
             }
@@ -224,13 +268,28 @@ fun CameraScreen() {
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
             val provider = providerFuture.get()
-            val preview = Preview.Builder().setResolutionSelector(ratio4x3().build()).build()
+            var lastFrameZoom = 0f
+            val preview = Preview.Builder()
+                .setResolutionSelector(ratio4x3().build())
+                .reportFrameZoom { z ->
+                    if (abs(z - lastFrameZoom) > 0.001f) {
+                        lastFrameZoom = z
+                        main.execute {
+                            frameZoom = z
+                            frameZoomReported = true
+                            zoomChangedAt = SystemClock.elapsedRealtime()
+                        }
+                    }
+                }
+                .build()
             preview.surfaceProvider = previewView.surfaceProvider
             provider.unbindAll()
             val cam = provider.bindToLifecycle(lifecycleOwner, widestBackCamera(provider), preview, analysis, imageCapture)
             camera = cam
             engine.lens = lensOf(cam.cameraInfo)
             cameraZoom = 1f
+            cameraTarget = 1f
+            frameZoom = 1f
             cam.cameraInfo.zoomState.observe(lifecycleOwner) {
                 if (it.minZoomRatio != minZoom || it.maxZoomRatio != maxZoom) {
                     minZoom = it.minZoomRatio
@@ -263,7 +322,7 @@ fun CameraScreen() {
     }
 
     // tick is the timestamp of the latest sensor/analysis update and drives recomposition.
-    val guidance = engine.update(userZoom, minZoom, motion.rotation, motion.steady, tick)
+    val guidance = engine.update(viewZoom, minZoom, motion.rotation, motion.steady, tick)
 
     LaunchedEffect(guidance.hold >= 1f) {
         if (guidance.hold >= 1f && autoCapture) capture()
@@ -283,9 +342,18 @@ fun CameraScreen() {
                 .pointerInput(Unit) {
                     detectTransformGestures { _, _, zoom, _ -> if (!capturing) setZoom(userZoom * zoom) }
                 }
+
         ) {
-            val scale = userZoom / cameraZoom
-            Box(Modifier.fillMaxSize().graphicsLayer { scaleX = scale; scaleY = scale }) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // Read here so a new frame zoom only redraws this layer, without recomposing the screen.
+                        val scale = if (capturing) captureScale else max(userZoom, frameZoom) / frameZoom
+                        scaleX = scale
+                        scaleY = scale
+                    }
+            ) {
                 AndroidView({ previewView }, Modifier.fillMaxSize())
                 frozen?.let {
                     Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
@@ -293,18 +361,18 @@ fun CameraScreen() {
             }
             val horizon = Geometry.horizon(motion.rotation)
             Canvas(Modifier.fillMaxSize()) { drawOverlay(guidance, heads, horizon) }
-            HintChip(guidance, autoCapture, Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
+            HintChip(guidance, autoCapture, onReframe = { engine.reset() }, Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
             Text(
-                "镜头 %.1f–%.0f× · 取景 %.2f× · 相机 %.2f× · %dms · Δ%.2f".format(minZoom, maxZoom, userZoom, cameraZoom, inferenceMs, gain),
+                "镜头 %.1f–%.0f× · 取景 %.2f× · 相机 %.2f× · %dms · Δ%.2f".format(minZoom, maxZoom, viewZoom, frameZoom, inferenceMs, gain),
                 color = Color.White.copy(alpha = 0.6f), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.BottomStart).padding(6.dp)
             )
         }
 
         Spacer(Modifier.height(12.dp))
-        ZoomRow(minZoom, maxZoom, userZoom, guidance.targetZoom) { target ->
+        ZoomRow(minZoom, maxZoom, viewZoom, guidance.targetZoom) { target ->
             scope.launch {
-                zoomAnim.snapTo(userZoom)
+                zoomAnim.snapTo(viewZoom)
                 zoomAnim.animateTo(target.coerceIn(minZoom, maxZoom), tween(450)) { setZoom(value) }
             }
         }
@@ -403,7 +471,7 @@ private fun DrawScope.drawLevel(h: Horizon, center: Offset) {
 }
 
 @Composable
-private fun HintChip(g: Guidance, autoCapture: Boolean, modifier: Modifier) {
+private fun HintChip(g: Guidance, autoCapture: Boolean, onReframe: () -> Unit, modifier: Modifier) {
     val text = when (g.phase) {
         Phase.Searching -> "正在分析构图…"
         Phase.Good -> "取景合适，可以拍摄"
@@ -415,12 +483,25 @@ private fun HintChip(g: Guidance, autoCapture: Boolean, modifier: Modifier) {
         Phase.Guiding -> Amber
         Phase.Searching -> Color.White
     }
-    Text(
-        text, color = color, fontSize = 16.sp, fontWeight = FontWeight.Medium,
-        modifier = modifier
-            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(18.dp))
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    )
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text, color = color, fontSize = 16.sp, fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(18.dp))
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        if (g.phase == Phase.Guiding || g.phase == Phase.Aligned) {
+            Text(
+                "已锁定 · 重新取景", color = Color.White, fontSize = 12.sp,
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White.copy(alpha = 0.18f))
+                    .clickable(onClick = onReframe)
+                    .padding(horizontal = 12.dp, vertical = 5.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -503,6 +584,16 @@ private fun widestBackCamera(provider: ProcessCameraProvider): CameraSelector =
         .minByOrNull { it.zoomState.value?.minZoomRatio ?: 1f }
         ?.cameraSelector
         ?: CameraSelector.DEFAULT_BACK_CAMERA
+
+/** Reports the zoom ratio each preview frame was actually captured at (camera thread). */
+@OptIn(ExperimentalCamera2Interop::class)
+private fun Preview.Builder.reportFrameZoom(onZoom: (Float) -> Unit) = apply {
+    Camera2Interop.Extender(this).setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let(onZoom)
+        }
+    })
+}
 
 private fun ratio4x3() = ResolutionSelector.Builder()
     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)

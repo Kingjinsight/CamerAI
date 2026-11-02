@@ -1,7 +1,8 @@
-"""Measures the model's preference for larger/smaller framings in the app's setting and stores it
+"""Measures the model's preference for larger/smaller framings in the app's settings and stores it
 in gaic.json as `size_prior`, which the app partly subtracts so zoom hints follow content, not size.
 
-Mirrors the app: portrait 3:4 frames, viewfinder = frame / 1.5, candidates from
+Mirrors the app: portrait 3:4 frames, viewfinder = frame / context (1.5 with an ultra-wide or
+digital headroom, 1.0 when the camera cannot be wider than the viewfinder), candidates from
 Geometry.candidates() in android/.../Geometry.kt (keep the two in sync).
 """
 import argparse
@@ -16,7 +17,7 @@ from PIL import Image
 from model import MEAN, STD
 
 W, H = 240, 320
-CONTEXT = 1.5
+CONTEXTS = (1.0, 1.5)
 
 
 def candidates(view, scales=7, max_positions=6):
@@ -40,12 +41,8 @@ def main():
     args = ap.parse_args()
 
     sess = ort.InferenceSession(args.model, providers=["CPUExecutionProvider"])
-    view = 1 / CONTEXT
-    cand = candidates(view)
-    boxes = np.stack([(cand[:, 0] - cand[:, 2] / 2) * W, (cand[:, 1] - cand[:, 2] / 2) * H,
-                      (cand[:, 0] + cand[:, 2] / 2) * W, (cand[:, 1] + cand[:, 2] / 2) * H], 1)
     rng = np.random.default_rng(0)
-    rel = []
+    frames = []
     for path in sorted(Path(args.data, "images", "test").glob("*.jpg")):
         img = Image.open(path).convert("RGB")
         w, h = img.size
@@ -54,20 +51,26 @@ def main():
         x0 = (w - cw) / 2 + rng.uniform(-0.3, 0.3) * (w - cw)
         frame = img.crop((int(x0), int((h - ch) / 2), int(x0 + cw), int((h + ch) / 2))).resize((W, H), Image.BILINEAR)
         x = ((np.asarray(frame, np.float32) / 255 - np.array(MEAN, np.float32)) / np.array(STD, np.float32))
-        scores = sess.run(None, {"image": x.transpose(2, 0, 1)[None], "boxes": boxes.astype(np.float32)})[0]
-        rel.append(scores - scores[0])
-    rel = np.stack(rel)
+        frames.append(x.transpose(2, 0, 1)[None])
 
-    # Mean score per relative size over all positions, shifted so a pure pan (size 1) costs nothing.
-    sizes = np.round(cand[1:, 2] / view, 3)
-    r = np.unique(sizes)
-    b = np.array([rel[:, 1:][:, sizes == u].mean() for u in r])
-    prior = zip(r.tolist(), (b - np.interp(1.0, r, b)).tolist())
     meta_path = Path(args.model).with_suffix(".json")
     meta = json.loads(meta_path.read_text())
-    meta["size_prior"] = [[round(u, 3), round(v, 3)] for u, v in prior]
+    meta["size_prior"] = {}
+    for context in CONTEXTS:
+        view = 1 / context
+        cand = candidates(view)
+        boxes = np.stack([(cand[:, 0] - cand[:, 2] / 2) * W, (cand[:, 1] - cand[:, 2] / 2) * H,
+                          (cand[:, 0] + cand[:, 2] / 2) * W, (cand[:, 1] + cand[:, 2] / 2) * H], 1).astype(np.float32)
+        rel = np.stack([s - s[0] for s in (sess.run(None, {"image": x, "boxes": boxes})[0] for x in frames)])
+
+        # Mean score per relative size over all positions, shifted so a pure pan (size 1) costs nothing.
+        sizes = np.round(cand[1:, 2] / view, 3)
+        r = np.unique(sizes)
+        b = np.array([rel[:, 1:][:, sizes == u].mean() for u in r])
+        prior = [[round(u, 3), round(v, 3)] for u, v in zip(r.tolist(), (b - np.interp(1.0, r, b)).tolist())]
+        meta["size_prior"][f"{context:.1f}"] = prior
+        print(f"size_prior @ context {context} (relative size, score bias):", prior)
     meta_path.write_text(json.dumps(meta, indent=2))
-    print("size_prior (relative size, score bias):", meta["size_prior"])
 
 
 if __name__ == "__main__":
